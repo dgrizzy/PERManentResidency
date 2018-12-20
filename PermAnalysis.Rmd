@@ -1,0 +1,234 @@
+---
+title: "PERMAnalysis"
+author: "David Griswold"
+date: "7/21/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE, cache = TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Setup
+
+## Few Notes on Coding Style
+
+In this work, I tend to use a lot of for loops. As the runtime for this process has improved and its saving me time, I use them. If a more elegant way to understand this idea comes to mind, please let me know. 
+
+## Load Required Packages
+```{r}
+library(stringr)
+library(magrittr)
+library(readxl)
+library(stargazer)
+library(lubridate)
+library(forcats)
+library(tidyverse)
+```
+
+# Reading Data
+```{r message=FALSE, warning=FALSE}
+# Reading all contents of the Data Sub Directory
+for (file in list.files("Data")) {
+  assign(str_extract(file, "Data_[:alnum:]{4}"), read_excel(paste("Data/", file, sep = "")))
+  if (file == list.files("Data")[length(list.files("Data"))]) {rm(file)}
+}
+```
+
+## Solve Colname Differerences
+```{r}
+# Grab a quick list of our data files
+ourDfs <- str_extract(ls(), "Data_FY[:digit:]{2}")[!is.na(str_extract(ls(), "Data_FY[:digit:]{2}"))]; ourDfs
+
+# Check for differneces
+diffs <- function (frames, standard) {
+  standardNames <- colnames(get(standard))
+  
+  differences <- list()
+  
+  for (frame in ourDfs[-str_which(ourDfs, standard)]) {
+  focalNames <- colnames(get(frame))
+  
+  for (index in 1:length(focalNames)) {
+  if (focalNames[index] != standardNames[index]) {
+  differences[[frame]] <- c(differences[[frame]], focalNames[index])
+  
+  }
+  }
+  }
+  if (length(differences) > 0) {
+  return(differences)
+  
+  } else {
+  return("The Frames Are the Same!")
+  }
+  
+}
+
+diffs(ourDfs, "Data_FY18")
+
+# Standardized Values Will be 2018 Values. Looks like only 2015 needs to be changed 
+correctNames <- function (frames, standard) {
+  
+  standardNames <- colnames(get(standard))
+  
+  for (thisFrame in frames) {
+    
+    ourFrame <- get(thisFrame)
+    
+  for (index in 1:ncol(ourFrame)) {
+  
+  if (colnames(ourFrame)[index] != standardNames[index]) {
+    colnames(ourFrame)[index] <- standardNames[index]
+  
+  
+  print(paste(
+  "I changed",
+  colnames(get(thisFrame))[index],
+  "in",
+  thisFrame,
+  "to",
+  standardNames[index]
+  ))
+  
+  }
+  
+  }
+  assign(thisFrame, ourFrame, envir = .GlobalEnv)
+  }
+}
+
+# Execute Functions 
+correctNames(ourDfs, "Data_FY18")
+diffs(ourDfs, "Data_FY18")
+```
+Key issue with source data here, the column names don't match. As a result, we can't pull our data frames together without fixing it, so let's set up an algorithm to fix that. Basically, it just looks like a few specific ones have been renamed. I am going to treat the most modern of these names as the modern. 
+
+## Combind Frames
+```{r}
+combOne <- rbind(Data_FY15, Data_FY16)
+combTwo <- rbind(Data_FY17, Data_FY18)
+
+permData <- rbind(combOne, combTwo)
+
+rm(combOne); rm(combTwo)
+rm(Data_FY15); rm(Data_FY16); rm(Data_FY17); rm(Data_FY18); rm(ourDfs)
+```
+
+
+## Examine NA Amount
+```{r}
+missingByCol <- map(permData, is.na) %>%
+  map(sum)
+
+qplot(flatten_int(missingByCol))
+```
+
+First, I want to make this dataset a littel slimmer, so I am going to use a few select statments to slim things down in order to make things a little easeir to work with.
+
+There is a few parts of data that I really don't have too much use for beacause my central question dosen't really align with what I am looking for out of this anaysis.
+
+- Agent information: for this anlysis
+
+```{r}
+permData3 <- permData2 %>% 
+  select(-starts_with("AGENT"),
+         -starts_with("JI"),
+         -starts_with("RI"),
+         -starts_with("RECR")
+         ) %>% 
+  mutate(DECISION_DATE = ymd(DECISION_DATE),
+         ORIG_FILE_DATE = ymd(ORIG_FILE_DATE),
+         CASE_RECEIVED_DATE = ymd(CASE_RECEIVED_DATE))
+```
+
+
+
+
+```{r}
+topMissing <- missingByCol %>% 
+  keep(. > 300000) %>% 
+  
+topMissing
+```
+
+Varibles Scheduled for removal:
+
+- `EMPLOYER_ADDRESS_2`: Not necessary for analysis
+- `EMPLOYER_COUNTRY`: Assumed to be USA
+- `EMPLOYER_PHONE`: Not necessary for analysis
+- `EMPLOYER_PHONE_EXT`: 
+
+```{r}
+permData2 <- select(permData,
+                    -EMPLOYER_ADDRESS_2,
+                    -EMPLOYER_COUNTRY,
+                    -EMPLOYER_PHONE,
+                    -EMPLOYER_PHONE_EXT)
+```
+
+
+Also, I want to drop the informaiton pertaining to agents. Let's take a quick look at this information before I do so.
+```{r}
+sum(is.na(permData2$AGENT_FIRM_NAME)) / nrow(permData2) 
+```
+
+88% of PERM seekers use an agent
+
+
+# Where are our green card applicants from?
+```{r}
+permData2 %>% group_by(FW_INFO_BIRTH_COUNTRY) %>% summarise(count = n()) %>% ungroup() %>% 
+  arrange(desc(count)) %>% 
+  slice(1:8) %>% 
+  ggplot() +
+  geom_col(aes(x =fct_reorder(FW_INFO_BIRTH_COUNTRY, count, .desc = TRUE), y = count / 1000, fill = FW_INFO_BIRTH_COUNTRY)) +
+  theme(legend.position="none") +
+  labs(x = "Foreign Worker Birth Country", y = "Workers (Thousand)", title = "Top Foreign Worker Birth Countries")
+```
+
+# What are PERMrs doing?
+```{r}
+permData3 %>% 
+  group_by(PW_SOC_TITLE) %>% 
+  summarise(count = n()) %>% 
+  arrange(desc(count)) %>% 
+  slice(1:5) %>% 
+  ggplot() +
+  geom_col(aes(x = fct_reorder(PW_SOC_TITLE, count, .desc = TRUE), y = count, fill = PW_SOC_TITLE)) +     theme(legend.position="none")
+```
+
+# How educated are these PERMers?
+```{r}
+permData3 %>%
+  group_by(JOB_INFO_EDUCATION) %>% 
+  summarise(count = n()) %>% 
+  arrange(desc(count)) %>% 
+  ggplot(aes(x = fct_reorder(JOB_INFO_EDUCATION,count, .desc = TRUE), y = count, fill = JOB_INFO_EDUCATION)) +
+  geom_col()
+```
+
+# Where do they work?
+```{r}
+permData3 %>% 
+  group_by(EMPLOYER_NAME) %>% 
+  summarise(count = n()) %>% 
+  arrange(desc(count)) %>% 
+  slice(1:5) %>% 
+  ggplot(aes(x = fct_reorder(EMPLOYER_NAME, count, .desc = TRUE), y = count, fill = EMPLOYER_NAME)) +
+  geom_col() +
+    theme(legend.position="none")
+```
+
+Makes since given the amount of developers we had coming through earlier. 
+
+
+# Filings over time
+```{r}
+group_by(permData3, CASE_RECEIVED_DATE) %>% 
+  summarise(count = n()) %>% 
+ ggplot(aes(x = CASE_RECEIVED_DATE, y = count)) +
+  geom_line() +
+  geom_smooth()
+```
+
